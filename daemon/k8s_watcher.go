@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cilium/cilium/pkg/comparator"
@@ -326,6 +327,10 @@ func (d *Daemon) initK8sSubsystem() <-chan struct{} {
 			// being restored to have the right identity.
 			k8sAPIGroupPodV1Core,
 		)
+
+		// Mark SVC bootstrap as finished
+		atomic.StoreInt32(&d.svcBootstrapPhase, 0)
+
 		// CiliumEndpoint is used to synchronize the ipcache, wait for
 		// it unless it is disabled
 		if !option.Config.DisableCiliumEndpointCRD {
@@ -1089,6 +1094,8 @@ func (d *Daemon) k8sServiceHandler() {
 			}
 
 			if !svc.IsExternal() {
+				// Event has been consumed, decrement the waitgroup counter
+				d.decSVCBootstrapWG()
 				continue
 			}
 
@@ -1119,6 +1126,8 @@ func (d *Daemon) k8sServiceHandler() {
 			}
 
 			if !svc.IsExternal() {
+				// Event has been consumed, decrement the waitgroup counter
+				d.decSVCBootstrapWG()
 				continue
 			}
 
@@ -1134,6 +1143,9 @@ func (d *Daemon) k8sServiceHandler() {
 				d.TriggerPolicyUpdates(true, "Kubernetes service endpoint deleted")
 			}
 		}
+
+		// Event has been consumed, decrement the waitgroup counter
+		d.decSVCBootstrapWG()
 	}
 }
 
@@ -1142,7 +1154,17 @@ func (d *Daemon) runK8sServiceHandler() {
 }
 
 func (d *Daemon) addK8sServiceV1(svc *types.Service) error {
-	d.k8sSvcCache.UpdateService(svc)
+	d.incWaitGroupSVCBootstap()
+	_, sent := d.k8sSvcCache.UpdateService(svc)
+	// We cannot increment the waitgroup counter after calling UpdateService(),
+	// as the method might send an event which is consumed by d.k8sServiceHandler()
+	// running in a separate goroutine which decrements the counter after processing
+	// the event. So, the counter value could potentially become <0 before
+	// the increment taking place which would make sync/atomic.WaitGroup to panic.
+	// Therefore, increment the counter in any case, and then decrement it if no
+	// event was sent by the method call.
+	d.decSVCBootstrapWGIfNotSent(sent)
+
 	return nil
 }
 
@@ -1151,22 +1173,30 @@ func (d *Daemon) updateK8sServiceV1(oldSvc, newSvc *types.Service) error {
 }
 
 func (d *Daemon) deleteK8sServiceV1(svc *types.Service) error {
-	d.k8sSvcCache.DeleteService(svc)
+	d.incWaitGroupSVCBootstap()
+	sent := d.k8sSvcCache.DeleteService(svc)
+	d.decSVCBootstrapWGIfNotSent(sent)
+
 	return nil
 }
 
 func (d *Daemon) addK8sEndpointV1(ep *types.Endpoints) error {
-	d.k8sSvcCache.UpdateEndpoints(ep)
+	d.incWaitGroupSVCBootstap()
+	_, _, sent := d.k8sSvcCache.UpdateEndpoints(ep)
+	d.decSVCBootstrapWGIfNotSent(sent)
+
 	return nil
 }
 
 func (d *Daemon) updateK8sEndpointV1(oldEP, newEP *types.Endpoints) error {
-	d.k8sSvcCache.UpdateEndpoints(newEP)
-	return nil
+	return d.addK8sEndpointV1(newEP)
 }
 
 func (d *Daemon) deleteK8sEndpointV1(ep *types.Endpoints) error {
-	d.k8sSvcCache.DeleteEndpoints(ep)
+	d.incWaitGroupSVCBootstap()
+	_, sent := d.k8sSvcCache.DeleteEndpoints(ep)
+	d.decSVCBootstrapWGIfNotSent(sent)
+
 	return nil
 }
 
@@ -1280,6 +1310,24 @@ func (d *Daemon) addK8sSVCs(svcID k8s.ServiceID, svc *k8s.Service, endpoints *k8
 		}
 	}
 	return nil
+}
+
+func (d *Daemon) incWaitGroupSVCBootstap() {
+	if atomic.LoadInt32(&d.svcBootstrapPhase) == 1 {
+		d.svcBootstrapPhaseWG.Add(1)
+	}
+}
+
+func (d *Daemon) decSVCBootstrapWGIfNotSent(eventIsSent bool) {
+	if atomic.LoadInt32(&d.svcBootstrapPhase) == 1 && !eventIsSent {
+		d.svcBootstrapPhaseWG.Add(-1)
+	}
+}
+
+func (d *Daemon) decSVCBootstrapWG() {
+	if atomic.LoadInt32(&d.svcBootstrapPhase) == 1 {
+		d.svcBootstrapPhaseWG.Done()
+	}
 }
 
 func (d *Daemon) updateCiliumNetworkPolicyV2AnnotationsOnly(ciliumNPClient clientset.Interface, ciliumV2Store cache.Store, cnp *types.SlimCNP) {

@@ -57,6 +57,7 @@ import (
 	"github.com/cilium/cilium/pkg/pidfile"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/pprof"
+	"github.com/cilium/cilium/pkg/service"
 	"github.com/cilium/cilium/pkg/version"
 	"github.com/cilium/cilium/pkg/workloads"
 
@@ -829,6 +830,8 @@ func initEnv(cmd *cobra.Command) {
 		logfields.Path + ".RunDir": option.Config.RunDir,
 		logfields.Path + ".LibDir": option.Config.LibDir,
 	})
+
+	service.EnableGlobalServiceID(true)
 
 	option.Config.BpfDir = filepath.Join(option.Config.LibDir, defaults.BpfDir)
 	scopedLog = scopedLog.WithField(logfields.Path+".BPFDir", defaults.BpfDir)

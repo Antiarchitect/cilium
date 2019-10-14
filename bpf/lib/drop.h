@@ -53,6 +53,7 @@ __section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_DROP_NOTIFY) int __send_drop_notify
 		.source = EVENT_SOURCE,
 		.hash = hash,
 		.len_orig = skb_len,
+		.len_meta = sizeof(msg),
 		.len_cap = cap_len,
 		.src_label = skb->cb[0],
 		.dst_label = skb->cb[1],

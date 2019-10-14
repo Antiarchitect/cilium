@@ -207,6 +207,7 @@ static inline void cilium_dbg_capture2(struct __sk_buff *skb, __u8 type, __u32 a
 		.source = EVENT_SOURCE,
 		.hash = hash,
 		.len_orig = skb_len,
+		.len_meta = sizeof(msg),
 		.len_cap = cap_len,
 		.arg1 = arg1,
 		.arg2 = arg2,
